@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 function create_kind_cluster() {
-version=${1:-1.28.7}
+version=${1:-1.29.2}
 
   config=$(mktemp)
 cat <<EOF >"$config"
