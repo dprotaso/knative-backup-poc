@@ -67,9 +67,9 @@ func main() {
 			panic(err)
 		}
 
-		for _, obj := range list.Items {
-			obj := obj
-			sanitizeObj(client, &obj)
+		for _, item := range list.Items {
+			obj := item.DeepCopy()
+			sanitizeObj(client, obj)
 
 			resource := gvrFromAPIVersion(obj.GetAPIVersion(), obj.GetKind())
 
@@ -81,18 +81,19 @@ func main() {
 			}
 
 			fmt.Printf("Creating resource %q %s/%s\n", resource, obj.GetNamespace(), obj.GetName())
-			val, err := rClient.Create(context.Background(), &obj, metav1.CreateOptions{})
+			val, err := rClient.Create(context.Background(), obj, metav1.CreateOptions{})
 			if err != nil {
 				panic(err)
 			}
 
+			// ConfigMaps don't have a status
 			if obj.GetKind() == "ConfigMap" {
 				continue
 			}
 
 			obj.SetResourceVersion(val.GetResourceVersion())
 			fmt.Printf("Update resource status %q %s/%s\n", resource, obj.GetNamespace(), obj.GetName())
-			_, err = rClient.UpdateStatus(context.Background(), &obj, metav1.UpdateOptions{})
+			_, err = rClient.UpdateStatus(context.Background(), obj, metav1.UpdateOptions{})
 			if err != nil {
 				panic(err)
 			}
@@ -107,22 +108,15 @@ func sanitizeObj(client *dynamic.DynamicClient, u *unstructured.Unstructured) {
 	// Restore owner reference uid
 	refs := u.GetOwnerReferences()
 	for i, ref := range refs {
-		if ref.UID == "" {
-			gvr := gvrFromAPIVersion(ref.APIVersion, ref.Kind)
-			owner, err := client.Resource(gvr).Namespace(u.GetNamespace()).Get(context.TODO(), ref.Name, metav1.GetOptions{})
-			if err != nil {
-				panic(err)
-			}
-			ref.UID = owner.GetUID()
-			refs[i] = ref
+		gvr := gvrFromAPIVersion(ref.APIVersion, ref.Kind)
+		owner, err := client.Resource(gvr).Namespace(u.GetNamespace()).Get(context.TODO(), ref.Name, metav1.GetOptions{})
+		if err != nil {
+			panic(err)
 		}
+		ref.UID = owner.GetUID()
+		refs[i] = ref
 	}
 	u.SetOwnerReferences(refs)
-
-	// Clear last apply annoation
-	ann := u.GetAnnotations()
-	delete(ann, " kubectl.kubernetes.io/last-applied-configuration")
-	u.SetAnnotations(ann)
 }
 
 func gvrFromAPIVersion(apiVersion, kind string) schema.GroupVersionResource {
