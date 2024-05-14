@@ -22,11 +22,17 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
 	"sigs.k8s.io/yaml"
+
+	"knative.dev/serving/pkg/apis/serving"
 )
+
+type uidMap map[string]string
 
 var input = flag.String("backup-file", "", "backup file to restore")
 
 func main() {
+	uidMap := make(uidMap)
+
 	var kubeconfig *string
 	if home := homedir.HomeDir(); home != "" {
 		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
@@ -69,7 +75,7 @@ func main() {
 
 		for _, item := range list.Items {
 			obj := item.DeepCopy()
-			sanitizeObj(client, obj)
+			sanitizeObj(uidMap, client, obj)
 
 			resource := gvrFromAPIVersion(obj.GetAPIVersion(), obj.GetKind())
 
@@ -86,11 +92,14 @@ func main() {
 				panic(err)
 			}
 
+			uidMap[string(item.GetUID())] = string(val.GetUID())
+
 			// ConfigMaps don't have a status
 			if obj.GetKind() == "ConfigMap" {
 				continue
 			}
 
+			// Update the resource version so the update succeeds
 			obj.SetResourceVersion(val.GetResourceVersion())
 			fmt.Printf("Update resource status %q %s/%s\n", resource, obj.GetNamespace(), obj.GetName())
 			_, err = rClient.UpdateStatus(context.Background(), obj, metav1.UpdateOptions{})
@@ -101,9 +110,11 @@ func main() {
 	}
 }
 
-func sanitizeObj(client *dynamic.DynamicClient, u *unstructured.Unstructured) {
+func sanitizeObj(uidMap uidMap, client *dynamic.DynamicClient, u *unstructured.Unstructured) {
 	unstructured.RemoveNestedField(u.Object, "metadata", "resourceVersion")
 	unstructured.RemoveNestedField(u.Object, "metadata", "uid")
+
+	replaceUIDLabels(uidMap, u)
 
 	// Restore owner reference uid
 	refs := u.GetOwnerReferences()
@@ -117,6 +128,35 @@ func sanitizeObj(client *dynamic.DynamicClient, u *unstructured.Unstructured) {
 		refs[i] = ref
 	}
 	u.SetOwnerReferences(refs)
+}
+
+func replaceUIDLabels(uidMap uidMap, u *unstructured.Unstructured) {
+	labels := u.GetLabels()
+	if labels == nil {
+		return
+	}
+
+	uidKeys := []string{
+		serving.RevisionUID,
+		serving.ConfigurationUIDLabelKey,
+		serving.ServiceUIDLabelKey,
+		serving.DomainMappingUIDLabelKey,
+	}
+
+	for _, key := range uidKeys {
+		val, ok := labels[key]
+		if !ok {
+			continue
+		}
+
+		newUID, ok := uidMap[val]
+		if !ok {
+			panic("referenced uid didn't exist")
+		}
+		labels[key] = newUID
+	}
+
+	u.SetLabels(labels)
 }
 
 func gvrFromAPIVersion(apiVersion, kind string) schema.GroupVersionResource {
